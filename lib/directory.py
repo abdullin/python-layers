@@ -101,20 +101,28 @@ class DirectoryLayer (object):
         If layer is specified, it is checked against the layer of an existing
         directory or set as the layer of a new directory.
         """
-        if isinstance(path, str): path=(path,)
+        self._check_version(tr, write_access=False)
+
         if not path:
             # Root directory contains node metadata and so may not be opened.
             raise ValueError("The root directory may not be opened.")
+
+        path = self._to_unicode_path(path)
+
         existing_node = self._find(tr, path)
         if existing_node:
             if not allow_open:
                 raise ValueError("The directory already exists.")
+
             existing_layer = tr[existing_node['layer'].key()]
-            if layer and existing_layer and existing_layer != layer:
+            if layer and existing_layer and existing_layer != layer: # TODO: should we be checking that existing layer exists?
                 raise ValueError("The directory exists but was created with an incompatible layer.")
             return self._contents_of_node(existing_node, path, existing_layer)
         if not allow_create:
             raise ValueError("The directory does not exist.")
+
+        # TODO: currently reading version twice
+        self._check_version(tr)
 
         if prefix == None:
             prefix = self.content_subspace.key() + self.allocator.allocate(tr)
@@ -170,8 +178,10 @@ class DirectoryLayer (object):
         already exists at `new_path`, or the parent directory of `new_path` does
         not exist.
         """
-        if isinstance(old_path, str): old_path=(old_path,)
-        if isinstance(new_path, str): new_path=(new_path,)
+        self._check_version(tr)
+
+        old_path = self._to_unicode_path(old_path)
+        new_path = self._to_unicode_path(new_path)
 
         if old_path == new_path[:len(old_path)]:
             raise ValueError("The destination directory cannot be a subdirectory of the source directory.")
@@ -195,7 +205,9 @@ class DirectoryLayer (object):
         Warning: Clients that have already opened the directory might still
         insert data into its contents after it is removed.
         """
-        if isinstance(path, str): path=(path,)
+        self._check_version(tr)
+
+        path = self._to_unicode_path(path)
         n = self._find(tr, path)
         if not n:
             raise ValueError("The directory doesn't exist.")
@@ -204,7 +216,9 @@ class DirectoryLayer (object):
 
     @fdb.transactional
     def list(self, tr, path=()):
-        if isinstance(path, str): path=(path,)
+        self._check_version(tr, write_access=False)
+
+        path = self._to_unicode_path(path)
         node = self._find(tr, path)
         if not node:
             raise ValueError("The given directory does not exist.")
@@ -215,7 +229,29 @@ class DirectoryLayer (object):
     ########################################
 
     SUBDIRS=0
-    
+    VERSION=(1,0,0)
+
+    def _check_version(self, tr, write_access=True):
+        # TODO: Is it ok that we read the key every time? Seems the safest 
+        version = tr[self.root_node['version']]
+
+        if not version.present():
+            if write_access:
+                self._initialize_directory(tr)
+
+            return
+
+        version = struct.unpack('<III', str(version))
+
+        if version[0] > self.VERSION[0]:
+            raise Exception("Cannot load directory with version %d.%d.%d using directory layer %d.%d.%d" % (version + self.VERSION)) # TODO: different error type?
+
+        if version[1] > self.VERSION[1] and write_access:
+            raise Exception("Directory with version %s.%s.%s is read-only when opened using directory layer %s.%s.%s" % (version + self.VERSION)) # TODO: different error type?
+
+    def _initialize_directory(self, tr):
+        tr[self.root_node['version']] = struct.pack('<III', *self.VERSION)
+
     def _node_containing_key(self, tr, key):
         # Right now this is only used for _is_prefix_free(), but if we add
         # parent pointers to directory nodes, it could also be used to find a
@@ -266,7 +302,28 @@ class DirectoryLayer (object):
         # Returns true if the given prefix does not "intersect" any currently
         # allocated prefix (including the root node). This means that it neither
         # contains any other prefix nor is contained by any other prefix.
-        return prefix and not self._node_containing_key(tr, prefix) and not len(list(tr.get_range(self.node_subspace.pack((prefix,)), self.node_subspace.pack((strinc(prefix),)), limit=1)))
+        node_range = self.node_subspace.range((prefix,))
+        return prefix and not self._node_containing_key(tr, prefix) and not len(list(tr.get_range(node_range.start, node_range.stop, limit=1))) # TODO: make sure this change is correct
+
+    def _to_unicode_path(self, path):
+        if isinstance(path, str):
+            path = unicode(path)
+
+        if isinstance(path, unicode):
+            return (path,)
+
+        if isinstance(path, tuple):
+            path = list(path)
+            for i, name in enumerate(path):
+                if isinstance(name, str):
+                    path[i] = unicode(path[i])
+                elif not isinstance(name, unicode):
+                    raise ValueError('Invalid path: must be a unicode string or a tuple of unicode strings')
+
+            return tuple(path)
+
+        raise ValueError('Invalid path: must be a unicode string or a tuple of unicode strings')
+
 
 directory = DirectoryLayer()
 
@@ -313,13 +370,6 @@ class DirectorySubspace (Subspace):
     def list(self, db_or_tr):
         return self.directoryLayer.list(db_or_tr, self.path)
 
-
-def strinc(key):
-    lastc = (ord(key[-1:]) + 1) % 256
-    if lastc:
-        return key[:-1] + chr(lastc)
-    else:
-        return strinc(key[:-1]) + chr(lastc)
 
 if __name__ == '__main__':
     # If module is run as a script, print the directory tree.  This code will
