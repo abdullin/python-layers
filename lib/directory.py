@@ -78,16 +78,17 @@ class HighContentionAllocator (object):
         return 8192
 
 
+# TODO: layer string should be unicode
 class DirectoryLayer (object):
 
-    def __init__(self, node_subspace=Subspace(rawPrefix="\xfe"), content_subspace=Subspace(), path=()):
+    def __init__(self, node_subspace=Subspace(rawPrefix="\xfe"), content_subspace=Subspace()):
         # If specified, new automatically allocated prefixes will all fall within content_subspace
         self.content_subspace = content_subspace
         self.node_subspace = node_subspace
         # The root node is the one whose contents are the node subspace
         self.root_node = self.node_subspace[self.node_subspace.key()]
         self.allocator = HighContentionAllocator(self.root_node['hca'])
-        self.path = path
+        self.path = ()
 
     @fdb.transactional
     def create_or_open(self, tr, path, layer=None, prefix=None, allow_create=True, allow_open=True):
@@ -272,7 +273,7 @@ class DirectoryLayer (object):
             raise Exception("Cannot load directory with version %d.%d.%d using directory layer %d.%d.%d" % (version + self.VERSION)) # TODO: different error type?
 
         if version[1] > self.VERSION[1] and write_access:
-            raise Exception("Directory with version %s.%s.%s is read-only when opened using directory layer %s.%s.%s" % (version + self.VERSION)) # TODO: different error type?
+            raise Exception("Directory with version %d.%d.%d is read-only when opened using directory layer %d.%d.%d" % (version + self.VERSION)) # TODO: different error type?
 
     def _initialize_directory(self, tr):
         tr[self.root_node['version']] = struct.pack('<III', *self.VERSION)
@@ -300,7 +301,9 @@ class DirectoryLayer (object):
         prefix = self.node_subspace.unpack(node.key())[0]
 
         if layer == 'partition':
-            return DirectoryLayer(Subspace(rawPrefix=prefix+"\xfe"), Subspace(rawPrefix=prefix), self.path + path)
+            partition = DirectoryLayer(Subspace(rawPrefix=prefix+"\xfe"), Subspace(rawPrefix=prefix))
+            partition.path = self.path + path
+            return partition
         
         return DirectorySubspace(path, prefix, self, layer)
 
@@ -372,7 +375,7 @@ class DirectorySubspace (Subspace):
         return 'DirectorySubspace(' + repr(self.path) + ',' + repr(self.rawPrefix) + ')'
 
     def check_layer(self, layer):
-        if layer and self.layer and layer!=self.layer:
+        if layer and self.layer and layer!=self.layer: # TODO: how to deal with self.layer not being set
             raise ValueError("The directory was created with an incompatible layer.")
 
     def create_or_open(self, db_or_tr, name_or_path, layer=None, prefix=None):
@@ -391,6 +394,7 @@ class DirectorySubspace (Subspace):
         return self.directoryLayer.create(db_or_tr, self.path + name_or_path, layer)
 
     def move(self, db_or_tr, new_path):
+        new_path = self.directoryLayer._to_unicode_path(new_path)
         partition_path = new_path[:len(self.directoryLayer.path)]
         if partition_path != self.directoryLayer.path:
             raise ValueError("Cannot move between partitions.")
