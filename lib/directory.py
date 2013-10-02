@@ -214,7 +214,7 @@ class DirectoryLayer (object):
         tr[parent_node.subspace[self.SUBDIRS][new_path[-1]]] = self.node_subspace.unpack(old_node.subspace.key())[0]
         tr[old_node.subspace['path']] = fdb.tuple.pack(new_path)
         self._remove_from_parent(tr, old_path)
-        return self._contents_of_node(old_node.subspace, new_path, old_node.layer)
+        return self._contents_of_node(old_node.subspace, new_path, old_node.layer())
 
     @fdb.transactional
     def remove(self, tr, path):
