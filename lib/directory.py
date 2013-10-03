@@ -147,7 +147,6 @@ class DirectoryLayer (object):
         node = self._node_with_prefix(prefix)
         tr[parent_node[self.SUBDIRS][path[-1]]] = prefix
         if layer: tr[node['layer']] = layer
-        tr[node['path']] = fdb.tuple.pack(path)
         
         return self._contents_of_node(node, path, layer)
 
@@ -200,7 +199,7 @@ class DirectoryLayer (object):
             raise ValueError("The source directory does not exist.")
 
         if old_node.is_in_partition() or new_node.is_in_partition():
-            if not old_node.is_in_partition() or not new_node.is_in_partition() or old_node.partition_path() != new_node.partition_path(): 
+            if not old_node.is_in_partition() or not new_node.is_in_partition() or old_node.path != new_node.path: 
                 raise ValueError("Cannot move between partitions.")
 
             return new_node.get_contents(self).move(tr, old_node.get_partition_subpath(), new_node.get_partition_subpath())
@@ -212,7 +211,6 @@ class DirectoryLayer (object):
         if not parent_node.exists():
             raise ValueError("The parent of the destination directory does not exist. Create it first.")
         tr[parent_node.subspace[self.SUBDIRS][new_path[-1]]] = self.node_subspace.unpack(old_node.subspace.key())[0]
-        tr[old_node.subspace['path']] = fdb.tuple.pack(new_path)
         self._remove_from_parent(tr, old_path)
         return self._contents_of_node(old_node.subspace, new_path, old_node.layer())
 
@@ -226,14 +224,14 @@ class DirectoryLayer (object):
         self._check_version(tr)
 
         path = self._to_unicode_path(path)
-        n = self._find(tr, path).prefetch_metadata(tr)
-        if not n.exists():
+        node = self._find(tr, path).prefetch_metadata(tr)
+        if not node.exists():
             raise ValueError("The directory doesn't exist.")
 
-        if n.is_in_partition():
-            return n.get_contents(self).remove(tr, n.get_partition_subpath())
+        if node.is_in_partition():
+            return node.get_contents(self).remove(tr, node.get_partition_subpath())
 
-        self._remove_recursive(tr, n.subspace)
+        self._remove_recursive(tr, node.subspace)
         self._remove_from_parent(tr, path)
 
     @fdb.transactional
@@ -308,9 +306,9 @@ class DirectoryLayer (object):
         return DirectorySubspace(path, prefix, self, layer)
 
     def _find(self, tr, path):
-        n = Node(self.root_node, path)
-        for name in path:
-            n = Node(self._node_with_prefix(tr[n.subspace[self.SUBDIRS][name]]), path)
+        n = Node(self.root_node, [], path)
+        for i, name in enumerate(path):
+            n = Node(self._node_with_prefix(tr[n.subspace[self.SUBDIRS][name]]), path[:i+1], path)
             if not n.exists() or n.layer(tr) == 'partition':
                 return n
         return n
@@ -409,49 +407,38 @@ class DirectorySubspace (Subspace):
 
 class Node (object):
 
-    def __init__(self, subspace, path):
+    def __init__(self, subspace, path, target_path):
         self.subspace = subspace
         self.path = path
-
+        self.target_path = target_path
         self._layer = None
-        self._partition_path_str = None
-        self._partition_path = None
-
-    def prefetch_metadata(self, tr):
-        if self.exists():
-            self._layer = tr[self.subspace['layer']]
-            self._partition_path_str = tr[self.subspace['path']]
-
-        return self
 
     def exists(self):
         return self.subspace is not None
 
+    def prefetch_metadata(self, tr):
+        if self.exists():
+            self.layer(tr)
+
+        return self
+
     def layer(self, tr=None):
-        if self._layer is None and tr is not None and self.exists():
+        if tr:
+            self.loaded = True
             self._layer = tr[self.subspace['layer']]
+        elif self._layer is None:
+            raise Exception('Layer has not been read')
 
         return self._layer
 
-    def partition_path(self, tr=None):
-        if self._partition_path_str is None and tr is not None and self.exists():
-            self._partition_path_str = tr[self.subspace['path']]
-
-        if self._partition_path == None and self._partition_path_str is not None:
-            self._partition_path = fdb.tuple.unpack(self._partition_path_str)
-
-        return self._partition_path
-
     def is_in_partition(self, tr=None, include_empty_subpath=False):
-        return self.layer(tr) == 'partition' and (include_empty_subpath or len(self.partition_path(tr)) < len(self.path))
+        return self.exists() and self.layer(tr) == 'partition' and (include_empty_subpath or len(self.target_path) > len(self.path))
 
-    def get_partition_subpath(self, tr=None):
-        if not self.is_in_partition(tr, include_empty_subpath=True):
-            raise Exception('Requested node is not in a partition') # TODO: different error type?
-        return self.path[len(self.partition_path(tr)):]
+    def get_partition_subpath(self):
+        return self.target_path[len(self.path):]
 
     def get_contents(self, directory_layer, tr=None):
-        return directory_layer._contents_of_node(self.subspace, self.partition_path(tr), self.layer(tr))
+        return directory_layer._contents_of_node(self.subspace, self.path, self.layer(tr))
 
 
 if __name__ == '__main__':
