@@ -424,7 +424,6 @@ class Node (object):
 
     def layer(self, tr=None):
         if tr:
-            self.loaded = True
             self._layer = tr[self.subspace['layer']]
         elif self._layer is None:
             raise Exception('Layer has not been read')
