@@ -27,7 +27,7 @@ import fdb
 import fdb.tuple
 from subspace import Subspace
 
-fdb.api_version(100)
+fdb.api_version(200)
 
 
 class HighContentionAllocator (object):

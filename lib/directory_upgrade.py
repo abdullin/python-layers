@@ -4,7 +4,7 @@ import argparse
 import fdb
 import directory
 
-fdb.api_version(100)
+fdb.api_version(200)
 
 VERSION = (1,0,0)
 
