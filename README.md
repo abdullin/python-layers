@@ -22,7 +22,7 @@ The layers:
  * **directory.py** - Directories for administering layers and their respective subspaces. Directories are identified by paths analogous to the paths in a Unix-like file system.
  * **pubsub.py** - Message passing according to the publish-subscribe pattern. Allows management of feeds and inboxes as well as message delivery.
  * **queue.py** - Queues supporting a high contention mode for multiple clients and an optimized mode for single clients.
-  * **rankedset.py** - Ranked sets supporting efficient retrieval of elements by their rank within a set as defined by their lexicographic order.
+ * **rankedset.py** - Ranked sets supporting efficient retrieval of elements by their rank within a set as defined by their lexicographic order.
  * **simpledoc.py** - A simple, hierarchical data model for storing document-oriented data. Supports a powerful plugin capability with indexes.
  * **spatial.py** - A spatial index for 2D points that allows efficient queries of axis-aligned rectangular regions. Does dimensionality reduction via a Z-order fractal curve (aka geohash).
  * **stringintern.py** - For interning (aka normalizing, aliasing) commonly-used long strings into shorter representations. Maintains the normalization state in the database, as well as a local cache for high performance.
