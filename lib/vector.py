@@ -9,7 +9,7 @@ import fdb.tuple
 from directory import directory
 import threading
 
-fdb.api_version(100)
+fdb.api_version(200)
 
 ########################
 # _ImplicitTransaction #

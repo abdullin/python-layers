@@ -27,7 +27,7 @@ import fdb
 import fdb.tuple
 from subspace import Subspace
 
-fdb.api_version(100)
+fdb.api_version(200)
 
 
 class HighContentionAllocator (object):
@@ -78,6 +78,7 @@ class HighContentionAllocator (object):
         return 8192
 
 
+# TODO: layer string should be unicode
 class DirectoryLayer (object):
 
     def __init__(self, node_subspace=Subspace(rawPrefix="\xfe"), content_subspace=Subspace()):
@@ -87,6 +88,7 @@ class DirectoryLayer (object):
         # The root node is the one whose contents are the node subspace
         self.root_node = self.node_subspace[self.node_subspace.key()]
         self.allocator = HighContentionAllocator(self.root_node['hca'])
+        self.path = ()
 
     @fdb.transactional
     def create_or_open(self, tr, path, layer=None, prefix=None, allow_create=True, allow_open=True):
@@ -101,20 +103,32 @@ class DirectoryLayer (object):
         If layer is specified, it is checked against the layer of an existing
         directory or set as the layer of a new directory.
         """
-        if isinstance(path, str): path=(path,)
+        self._check_version(tr, write_access=False)
+
         if not path:
             # Root directory contains node metadata and so may not be opened.
             raise ValueError("The root directory may not be opened.")
-        existing_node = self._find(tr, path)
-        if existing_node:
+
+        path = self._to_unicode_path(path)
+
+        existing_node = self._find(tr, path).prefetch_metadata(tr)
+        if existing_node.exists():
+            if existing_node.is_in_partition():
+                subpath = existing_node.get_partition_subpath()
+                return existing_node.get_contents(self).create_or_open(tr, subpath, layer, prefix, allow_create, allow_open)
+
             if not allow_open:
                 raise ValueError("The directory already exists.")
-            existing_layer = tr[existing_node['layer'].key()]
-            if layer and existing_layer and existing_layer != layer:
+
+            if layer and existing_node.layer() != layer:
                 raise ValueError("The directory exists but was created with an incompatible layer.")
-            return self._contents_of_node(existing_node, path, existing_layer)
+
+            return existing_node.get_contents(self)
+
         if not allow_create:
             raise ValueError("The directory does not exist.")
+
+        self._check_version(tr)
 
         if prefix == None:
             prefix = self.content_subspace.key() + self.allocator.allocate(tr)
@@ -131,8 +145,8 @@ class DirectoryLayer (object):
             raise ValueError("The parent directory doesn't exist.")
 
         node = self._node_with_prefix(prefix)
-        tr[parent_node[self.SUBDIRS][path[-1]].key()] = prefix
-        if layer: tr[node['layer'].key()] = layer
+        tr[parent_node[self.SUBDIRS][path[-1]]] = prefix
+        if layer: tr[node['layer']] = layer
         
         return self._contents_of_node(node, path, layer)
 
@@ -170,23 +184,35 @@ class DirectoryLayer (object):
         already exists at `new_path`, or the parent directory of `new_path` does
         not exist.
         """
-        if isinstance(old_path, str): old_path=(old_path,)
-        if isinstance(new_path, str): new_path=(new_path,)
+        self._check_version(tr)
+
+        old_path = self._to_unicode_path(old_path)
+        new_path = self._to_unicode_path(new_path)
 
         if old_path == new_path[:len(old_path)]:
             raise ValueError("The destination directory cannot be a subdirectory of the source directory.")
-        if self._find(tr, new_path):
+        
+        old_node = self._find(tr, old_path).prefetch_metadata(tr)
+        new_node = self._find(tr, new_path).prefetch_metadata(tr)
+
+        if not old_node.exists():
+            raise ValueError("The source directory does not exist.")
+
+        if old_node.is_in_partition() or new_node.is_in_partition():
+            if not old_node.is_in_partition() or not new_node.is_in_partition() or old_node.path != new_node.path: 
+                raise ValueError("Cannot move between partitions.")
+
+            return new_node.get_contents(self).move(tr, old_node.get_partition_subpath(), new_node.get_partition_subpath())
+
+        if new_node.exists():
             raise ValueError("The destination directory already exists. Remove it first.")
 
-        old_node = self._find(tr, old_path)
-        if not old_node:
-            raise ValueError("The source directory does not exist.")
         parent_node = self._find(tr, new_path[:-1])
-        if not parent_node:
+        if not parent_node.exists():
             raise ValueError("The parent of the destination directory does not exist. Create it first.")
-        tr[parent_node[self.SUBDIRS][new_path[-1]].key()] = self._contents_of_node(old_node, None).key()
+        tr[parent_node.subspace[self.SUBDIRS][new_path[-1]]] = self.node_subspace.unpack(old_node.subspace.key())[0]
         self._remove_from_parent(tr, old_path)
-        return self._contents_of_node(old_node, new_path, tr[old_node['layer'].key()])
+        return self._contents_of_node(old_node.subspace, new_path, old_node.layer())
 
     @fdb.transactional
     def remove(self, tr, path):
@@ -195,27 +221,61 @@ class DirectoryLayer (object):
         Warning: Clients that have already opened the directory might still
         insert data into its contents after it is removed.
         """
-        if isinstance(path, str): path=(path,)
-        n = self._find(tr, path)
-        if not n:
+        self._check_version(tr)
+
+        path = self._to_unicode_path(path)
+        node = self._find(tr, path).prefetch_metadata(tr)
+        if not node.exists():
             raise ValueError("The directory doesn't exist.")
-        self._remove_recursive(tr, n)
+
+        if node.is_in_partition():
+            return node.get_contents(self).remove(tr, node.get_partition_subpath())
+
+        self._remove_recursive(tr, node.subspace)
         self._remove_from_parent(tr, path)
 
     @fdb.transactional
     def list(self, tr, path=()):
-        if isinstance(path, str): path=(path,)
-        node = self._find(tr, path)
-        if not node:
+        self._check_version(tr, write_access=False)
+
+        path = self._to_unicode_path(path)
+        node = self._find(tr, path).prefetch_metadata(tr)
+        if not node.exists():
             raise ValueError("The given directory does not exist.")
-        return [name for name, cnode in self._subdir_names_and_nodes(tr, node)]
+
+        if node.is_in_partition(include_empty_subpath=True):
+            return node.get_contents(self).list(tr, node.get_partition_subpath())
+
+        return [name for name, cnode in self._subdir_names_and_nodes(tr, node.subspace)]
 
     ########################################
     ## Private methods for implementation ##
     ########################################
 
     SUBDIRS=0
-    
+    VERSION=(1,0,0)
+
+    def _check_version(self, tr, write_access=True):
+        # TODO: Is it ok that we read the key every time? Seems the safest 
+        version = tr[self.root_node['version']]
+
+        if not version.present():
+            if write_access:
+                self._initialize_directory(tr)
+
+            return
+
+        version = struct.unpack('<III', str(version))
+
+        if version[0] > self.VERSION[0]:
+            raise Exception("Cannot load directory with version %d.%d.%d using directory layer %d.%d.%d" % (version + self.VERSION)) # TODO: different error type?
+
+        if version[1] > self.VERSION[1] and write_access:
+            raise Exception("Directory with version %d.%d.%d is read-only when opened using directory layer %d.%d.%d" % (version + self.VERSION)) # TODO: different error type?
+
+    def _initialize_directory(self, tr):
+        tr[self.root_node['version']] = struct.pack('<III', *self.VERSION)
+
     def _node_containing_key(self, tr, key):
         # Right now this is only used for _is_prefix_free(), but if we add
         # parent pointers to directory nodes, it could also be used to find a
@@ -237,14 +297,20 @@ class DirectoryLayer (object):
 
     def _contents_of_node(self, node, path, layer=None):
         prefix = self.node_subspace.unpack(node.key())[0]
+
+        if layer == 'partition':
+            partition = DirectoryLayer(Subspace(rawPrefix=prefix+"\xfe"), Subspace(rawPrefix=prefix))
+            partition.path = self.path + path
+            return partition
+        
         return DirectorySubspace(path, prefix, self, layer)
 
     def _find(self, tr, path):
-        n = self.root_node
-        for name in path:
-            n = self._node_with_prefix(tr[n[self.SUBDIRS][name].key()])
-            if n == None:
-                return None
+        n = Node(self.root_node, [], path)
+        for i, name in enumerate(path):
+            n = Node(self._node_with_prefix(tr[n.subspace[self.SUBDIRS][name]]), path[:i+1], path)
+            if not n.exists() or n.layer(tr) == 'partition':
+                return n
         return n
 
     def _subdir_names_and_nodes(self, tr, node):
@@ -254,19 +320,40 @@ class DirectoryLayer (object):
 
     def _remove_from_parent(self, tr, path):
         parent = self._find(tr, path[:-1])
-        del tr[parent[self.SUBDIRS][path[-1]].key()]
+        del tr[parent.subspace[self.SUBDIRS][path[-1]]]
 
     def _remove_recursive(self, tr, node):
         for name, sn in self._subdir_names_and_nodes(tr, node):
             self._remove_recursive(tr, sn)
-        tr.clear_range_startswith(self._contents_of_node(node, None).key())
+        tr.clear_range_startswith(self.node_subspace.unpack(node.key())[0])
         del tr[node.range(())]
 
     def _is_prefix_free(self, tr, prefix):
         # Returns true if the given prefix does not "intersect" any currently
         # allocated prefix (including the root node). This means that it neither
         # contains any other prefix nor is contained by any other prefix.
-        return prefix and not self._node_containing_key(tr, prefix) and not len(list(tr.get_range(self.node_subspace.pack((prefix,)), self.node_subspace.pack((strinc(prefix),)), limit=1)))
+        prefix_range = self.node_subspace.range((prefix,))
+        return prefix and not self._node_containing_key(tr, prefix) and not len(list(tr.get_range(prefix_range.start, prefix_range.stop, limit=1))) # TODO: make sure this change is correct
+
+    def _to_unicode_path(self, path):
+        if isinstance(path, str):
+            path = unicode(path)
+
+        if isinstance(path, unicode):
+            return (path,)
+
+        if isinstance(path, tuple):
+            path = list(path)
+            for i, name in enumerate(path):
+                if isinstance(name, str):
+                    path[i] = unicode(path[i])
+                elif not isinstance(name, unicode):
+                    raise ValueError('Invalid path: must be a unicode string or a tuple of unicode strings')
+
+            return tuple(path)
+
+        raise ValueError('Invalid path: must be a unicode string or a tuple of unicode strings')
+
 
 directory = DirectoryLayer()
 
@@ -286,7 +373,7 @@ class DirectorySubspace (Subspace):
         return 'DirectorySubspace(' + repr(self.path) + ',' + repr(self.rawPrefix) + ')'
 
     def check_layer(self, layer):
-        if layer and self.layer and layer!=self.layer:
+        if layer and self.layer and layer!=self.layer: # TODO: how to deal with self.layer not being set
             raise ValueError("The directory was created with an incompatible layer.")
 
     def create_or_open(self, db_or_tr, name_or_path, layer=None, prefix=None):
@@ -305,7 +392,12 @@ class DirectorySubspace (Subspace):
         return self.directoryLayer.create(db_or_tr, self.path + name_or_path, layer)
 
     def move(self, db_or_tr, new_path):
-        return self.directoryLayer.move(db_or_tr, self.path, new_path)
+        new_path = self.directoryLayer._to_unicode_path(new_path)
+        partition_path = new_path[:len(self.directoryLayer.path)]
+        if partition_path != self.directoryLayer.path:
+            raise ValueError("Cannot move between partitions.")
+
+        return self.directoryLayer.move(db_or_tr, self.path, new_path[len(self.directoryLayer.path):])
 
     def remove(self, db_or_tr):
         return self.directoryLayer.remove(db_or_tr, self.path)
@@ -313,13 +405,40 @@ class DirectorySubspace (Subspace):
     def list(self, db_or_tr):
         return self.directoryLayer.list(db_or_tr, self.path)
 
+class Node (object):
 
-def strinc(key):
-    lastc = (ord(key[-1:]) + 1) % 256
-    if lastc:
-        return key[:-1] + chr(lastc)
-    else:
-        return strinc(key[:-1]) + chr(lastc)
+    def __init__(self, subspace, path, target_path):
+        self.subspace = subspace
+        self.path = path
+        self.target_path = target_path
+        self._layer = None
+
+    def exists(self):
+        return self.subspace is not None
+
+    def prefetch_metadata(self, tr):
+        if self.exists():
+            self.layer(tr)
+
+        return self
+
+    def layer(self, tr=None):
+        if tr:
+            self._layer = tr[self.subspace['layer']]
+        elif self._layer is None:
+            raise Exception('Layer has not been read')
+
+        return self._layer
+
+    def is_in_partition(self, tr=None, include_empty_subpath=False):
+        return self.exists() and self.layer(tr) == 'partition' and (include_empty_subpath or len(self.target_path) > len(self.path))
+
+    def get_partition_subpath(self):
+        return self.target_path[len(self.path):]
+
+    def get_contents(self, directory_layer, tr=None):
+        return directory_layer._contents_of_node(self.subspace, self.path, self.layer(tr))
+
 
 if __name__ == '__main__':
     # If module is run as a script, print the directory tree.  This code will

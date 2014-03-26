@@ -33,7 +33,7 @@ import fdb.tuple
 import simpledoc
 from subspace import Subspace
 
-fdb.api_version(100)
+fdb.api_version(200)
 
 db = fdb.open(event_model="gevent")
 
