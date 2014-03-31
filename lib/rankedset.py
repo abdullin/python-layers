@@ -3,7 +3,7 @@
 Provides a RankedSet class.
 
 Ranked sets support efficient retrieval of elements by their rank as defined by
-lexicographic order. Elements are inserted into (or removed from) the set by key.
+lexiographic order. Elements are inserted into (or removed from) the set by key.
 The rank of any element can then be quickly determined, and an element can be
 quickly retrieved by based on its rank.
 
@@ -62,22 +62,14 @@ class RankedSet(object):
     # returns key, count
     @fdb.transactional
     def _get_previous_node(self, tr, level, key):
-
-        # _get_previous_node looks for the previous node on a level, but "doesn't care"
-        # about the contents of that node. It therefore uses a non-isolated (snaphot)
-        # read and explicitly adds a conflict range that is exclusive of the actual,
-        # found previous node. This allows an increment of that node not to trigger
-        # a transaction conflict. We also add a conflict key on the found previous
-        # key in level 0. This allows detection of erasures.
-
-        # print "gpn", level, key
         k = self.subspace.pack((level, key))
-        kv = list(tr.snapshot.get_range(fdb.KeySelector.last_less_than(k),
-                                        fdb.KeySelector.first_greater_or_equal(k),
-                                        limit=1))[0]
+        #kv = list(tr.snapshot.get_range(fdb.KeySelector.last_less_than(k),
+        kv = list(tr.get_range(fdb.KeySelector.last_less_than(k),
+                               fdb.KeySelector.first_greater_or_equal(k),
+                               limit=1))[0]
         prevKey = self.subspace.unpack(kv.key)[1]
-        tr.add_read_conflict_range(kv.key + '\x00', k)
-        tr.add_read_conflict_key(self.subspace.pack((0, prevKey)))
+        #tr.add_read_conflict_range(kv.key + '\x00', k)
+        #tr.add_read_conflict_key(self.subspace.pack((0, prevKey)))
         return prevKey
 
     @fdb.transactional
@@ -88,7 +80,7 @@ class RankedSet(object):
                 t = self.subspace.unpack(k)
                 print "\t", func(t[1]), "=", decodeCount(c)
 
-    # public interface 
+    # public interface ############
 
     @fdb.transactional
     def size(self, tr):
@@ -118,7 +110,6 @@ class RankedSet(object):
                 count = prevCount - newPrevCount
                 count += 1
 
-                # print "insert", key, "level", level, "count", count,
                 # "splits", prevKey, "oldC", prevCount, "newC", newPrevCount
                 tr[self.subspace.pack((level, prevKey))] = encodeCount(newPrevCount)
                 tr[self.subspace.pack((level, key))] = encodeCount(count)
@@ -149,8 +140,6 @@ class RankedSet(object):
             countChange = -1
             if c != None:
                 countChange += decodeCount(c)
-            # print "level", level, "setting", prevKey, "from", prevCount,
-            # "to", newCount
             tr.add(self.subspace.pack((level, prevKey)),
                    encodeCount(countChange))
 
@@ -176,7 +165,6 @@ class RankedSet(object):
             r -= lastCount
             if rank_key == key:
                 break
-            # print "rank at level", level, " is ", r, "rk=", rank_key
         return r
 
     @fdb.transactional
@@ -198,7 +186,6 @@ class RankedSet(object):
                     return key
                 if count > r:
                     break
-                # print "level", level, "eating", count, "at", key
                 r -= count
             else:
                 return None
@@ -230,8 +217,8 @@ import os
 import random
 import threading
 
-fdb.impl.TransactionRead.create_transaction = lambda self: self
-fdb.impl.TransactionRead.commit = lambda self: self.db.create_transaction().commit()
+#fdb.impl.TransactionRead.create_transaction = lambda self: self
+#fdb.impl.TransactionRead.commit = lambda self: self.db.create_transaction().commit()
 
 excl = threading.Lock()
 
