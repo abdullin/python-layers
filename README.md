@@ -19,6 +19,7 @@ The layers:
  * **blob.py** - Arbitrary-sized and sparse large binary objects.
  * **bulk.py** - Bulk-loads external datasets to FoundationDB with extensible support for CSV, JSV, and blobs.
  * **counter.py** - High-performance counter that illustrates the use of dynamic sharding for high contention conditions. Note: This layer was implemented prior to the release of our atomic operations. Counters can now be more effectively implemented using an [atomic operation](https://foundationdb.com/documentation/api-python.html#atomic-operations).
+ * **priorityqueue.py** - Double-ended priority queues. Items are pushed wth a specified priority, and items with either minimum or maximum priority can be popped or peeked. Supports high-contention popping for multiple clients.
  * **pubsub.py** - Message passing according to the publish-subscribe pattern. Allows management of feeds and inboxes as well as message delivery.
  * **queue.py** - Queues supporting a high contention mode for multiple clients and an optimized mode for single clients.
  * **rankedset.py** - Ranked sets supporting efficient retrieval of elements by their rank within a set as defined by their lexicographic order.
