@@ -42,11 +42,27 @@ class PriorityQueue(object):
         self._pop_request = self.subspace['P']
         self._requested_item = self.subspace['R']
         self._item = self.subspace['I']
+        self._member = self.subspace['M']
+
+    def __contains__(self, item):
+        return self._contains(db, item) 
 
     @fdb.transactional
     def clear(self, tr):
         '''Remove all items from the queue.'''
         del tr[self.subspace.range()]
+
+    @fdb.transactional
+    def remove(self, tr, item):
+        '''Remove item from arbitrary position in the queue.'''
+        for member in tr[self._member[item].range()]:
+            priority, index = self._member[item].unpack(member.key)
+            for item_key, value in tr[self._item[priority][index].range()]:
+                random_id = self._item[priority][index].unpack(item_key)[0]
+                i = self._decode(value)
+                if i == item:
+                    del tr[self._item[priority][index][random_id]]
+            del tr[self._member[item][priority][index]]
 
     @fdb.transactional
     def push(self, tr, item, priority):
@@ -63,7 +79,7 @@ class PriorityQueue(object):
         else:
             result = self._pop_low(db, max)
         if result is None:
-            return result
+            return None
         return self._decode(result)
 
     @fdb.transactional
@@ -92,6 +108,12 @@ class PriorityQueue(object):
     def _decode(self, value):
         return fdb.tuple.unpack(value)[0]
 
+    @fdb.transactional
+    def _contains(self, tr, item):
+        for _ in tr[self._member[item].range()]:
+            return True
+        return False   
+
     # Items are pushed on the queue at a key of (priority, index, randomID).
     # Items pushed at the same time with the same priority may have the same
     # index, so their ordering will be random. This makes pushes fast and
@@ -102,13 +124,14 @@ class PriorityQueue(object):
         # random ID while writing with the same priority and index.
         tr.add_read_conflict_key(key)
         tr[key] = item
+        tr[self._member[self._decode(item)][priority][index]] = ''
 
     def _get_next_index(self, tr, subspace):
-        lastKey = tr.get_key(
+        last_key = tr.get_key(
             fdb.KeySelector.last_less_than(subspace.range().stop))
-        if lastKey < subspace.range().start:
+        if last_key < subspace.range().start:
             return 0
-        return subspace.unpack(lastKey)[0] + 1
+        return subspace.unpack(last_key)[0] + 1
 
     def _get_first_item(self, tr, max=False):
         r = self._item.range()
@@ -123,8 +146,12 @@ class PriorityQueue(object):
         first_item = self._get_first_item(tr, max)
         if first_item is None:
             return None
-        del tr[first_item.key]
-        return first_item.value
+        key = first_item.key
+        item = first_item.value
+        del tr[key]
+        priority, index, _ = self._item.unpack(key)
+        del tr[self._member[self._decode(item)][priority][index]]
+        return item
 
     @fdb.transactional
     def _add_pop_request(self, tr, forced=False):
@@ -162,6 +189,8 @@ class PriorityQueue(object):
             tr.add_read_conflict_key(request.key)
             del tr[request.key]
             del tr[item_key]
+            priority, index, _ = self._item.unpack(item_key)
+            del tr[self._member[item_value][priority][index]]
             i += 1
 
         for request in requests[i:]:
@@ -252,12 +281,16 @@ def smoke_test(db, max):
     print 'Push 10, 8, 6'
     pq.push(db, 10, 10)
     pq.push(db, 8, 8)
+    pq.push(db, 8, 7)
     pq.push(db, 6, 6)
+    #pq.remove(db, 8)
     print 'Empty? %s' % pq.empty(db)
-    print 'Pop item: %d' % pq.pop(db, max)
-    print 'Next item: %d' % pq.peek(db, max)
-    print 'Pop item: %d' % pq.pop(db, max)
-    print 'Pop item: %d' % pq.pop(db, max)
+    #print 'Contains {}? {}'.format(8, 8 in pq)
+    print 'Pop item: %s' % pq.pop(db, max)
+    print 'Next item: %s' % pq.peek(db, max)
+    print 'Pop item: %s' % pq.pop(db, max)
+    print 'Pop item: %s' % pq.pop(db, max)
+    print 'Pop item: %s' % pq.pop(db, max)
     print 'Empty? %s' % pq.empty(db)
     print 'Push 5'
     pq.push(db, 5, 5)
@@ -312,5 +345,5 @@ if __name__ == '__main__':
     db = fdb.open(event_model="gevent")
     smoke_test(db, False)
     single_client(db, 10)
-    multi_client(db, 100, 10, False)
+    #multi_client(db, 100, 10, False)
     multi_client(db, 100, 10, True)
