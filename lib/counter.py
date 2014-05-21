@@ -18,7 +18,6 @@ import fdb
 import fdb.tuple
 import random
 import os
-from directory import directory
 
 fdb.api_version(200)
 
@@ -125,7 +124,7 @@ class Counter:
 
 def counter_example_1(db, location):
 
-    location = directory.create_or_open( db, ('tests','counter') )
+    location = fdb.directory.create_or_open( db, ('tests','counter') )
     c = Counter(db, location)
 
     for i in range(500):
@@ -156,7 +155,7 @@ def counter_example_2(db, location):
 
 if __name__ == "__main__":
     db = fdb.open()
-    location = directory.create_or_open( db, ('tests','counter') )
+    location = fdb.directory.create_or_open( db, ('tests','counter') )
     del db[location.range()]
 
     print "doing 500 inserts in 50 threads"

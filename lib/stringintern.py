@@ -9,7 +9,6 @@ import fdb
 import fdb.tuple
 import random
 import os
-from directory import directory
 
 fdb.api_version(200)
 
@@ -138,7 +137,7 @@ class StringIntern (object):
 def stringintern_example():
     db = fdb.open()
 
-    location = directory.create_or_open(db, ('tests','stringintern'))
+    location = fdb.directory.create_or_open(db, ('tests','stringintern'))
     strs = StringIntern(location)
 
     def test_insert(tr):

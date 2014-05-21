@@ -9,7 +9,6 @@ dimensionality reduction.
 
 import fdb
 import fdb.tuple
-from directory import directory
 
 fdb.api_version(200)
 
@@ -292,7 +291,7 @@ def internal_test2():
 # caution: modifies the database!
 def spatial_example():
     db = fdb.open()
-    index_location = directory.create_or_open(db, ('tests','spatial'))
+    index_location = fdb.directory.create_or_open(db, ('tests','spatial'))
     s = SpatialIndex( index_location )
 
     s.clear(db)

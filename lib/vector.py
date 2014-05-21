@@ -6,7 +6,6 @@ in FoundationDB.
 
 import fdb
 import fdb.tuple
-from directory import directory
 import threading
 
 fdb.api_version(200)
@@ -343,7 +342,7 @@ class Vector:
 # caution: modifies the database!
 @fdb.transactional
 def vector_test(tr):
-    vector = Vector(directory.create_or_open(tr, ('tests','vector')), 0)
+    vector = Vector(fdb.directory.create_or_open(tr, ('tests','vector')), 0)
 
     with vector.use_transaction(tr):
         print 'WITH IMPLICIT TRANSACTIONS:\n'
@@ -589,7 +588,7 @@ import sys
 # caution: modifies the database!
 @fdb.transactional
 def vector_example(tr):
-    vector = Vector(directory.create_or_open(tr, ('tests','vector')), 0)
+    vector = Vector(fdb.directory.create_or_open(tr, ('tests','vector')), 0)
 
     with vector.use_transaction(tr):
         vector.clear()

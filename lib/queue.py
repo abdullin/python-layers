@@ -18,7 +18,6 @@ import os
 
 import fdb
 import fdb.tuple
-from directory import directory
 
 fdb.api_version(200)
 
@@ -241,7 +240,7 @@ class Queue:
 ##################
 
 def queue_test(db):
-    queue = Queue(directory.create_or_open(db, ('tests','queue')), False)
+    queue = Queue(fdb.directory.create_or_open(db, ('tests','queue')), False)
     print 'Clear Queue'
     queue.clear(db)
     print 'Empty? %s' % queue.empty(db)
@@ -267,7 +266,7 @@ def queue_test(db):
 
 # caution: modifies the database!
 def queue_single_client_example(db):
-    queue = Queue(directory.create_or_open(db, ('tests','queue')), False)
+    queue = Queue(fdb.directory.create_or_open(db, ('tests','queue')), False)
     queue.clear(db)
 
     for i in range(10):
@@ -293,7 +292,7 @@ def queue_multi_client_example(db):
 
     for highContention in range(2):
         print 'Starting %s test' % descriptions[highContention]
-        queue = Queue(directory.create_or_open(db, ('tests','queue')), highContention > 0)
+        queue = Queue(fdb.directory.create_or_open(db, ('tests','queue')), highContention > 0)
         queue.clear(db)
 
         pushThreads = [ threading.Thread(target=push_thread, args=(queue, db, i, 100)) for i in range(10) ]
