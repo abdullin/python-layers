@@ -46,10 +46,12 @@ class PriorityQueue(object):
         self._requested_item = self.subspace['R'] # items that fulfill requests
 
     @fdb.transactional
-    def push(self, tr, item, priority):
+    def push(self, tr, item, priority, random_ID):
         '''Push a single item onto the queue.'''
+        if self._check_at_priority(tr, item, priority):
+            return
         count = self._get_next_count(tr.snapshot, self._item[priority])
-        self._push_at(tr, self._encode(item), count, priority)
+        self._push_at(tr, self._encode(item), count, priority, random_ID)
 
     def pop(self, db, max=False):
         '''Pop the next item from the queue.
@@ -73,7 +75,7 @@ class PriorityQueue(object):
             return self._decode(first_item.value)
 
     @fdb.transactional
-    def empty(self, tr):
+    def isempty(self, tr):
         '''Test whether the queue is empty.'''
         return self._get_first_item(tr) is None
 
@@ -96,15 +98,17 @@ class PriorityQueue(object):
 
     # Private methods
 
-    def _random_ID(self):
-        # Relies on good random data from the OS to avoid collisions
-        return os.urandom(20)
-
     def _encode(self, value):
         return fdb.tuple.pack((value,))
 
     def _decode(self, value):
         return fdb.tuple.unpack(value)[0]
+
+    def _check_at_priority(self, tr, item, priority):
+        r = self._member[item][priority].range()
+        for _ in tr.get_range(r.start, r.stop, limit=1):
+            return True
+        return False
 
     def _get_next_count(self, tr, subspace):
         last_key = tr.get_key(
@@ -117,10 +121,10 @@ class PriorityQueue(object):
     # Items pushed at the same time with the same priority may have the same
     # count, so their ordering will be random. This makes pushes fast and
     # usually conflict free (unless the queue becomes empty during the push).
-    def _push_at(self, tr, item, count, priority):
-        key = self._item[priority][count][self._random_ID()]
-        # Protect against the unlikely event that someone else got the same
-        # random ID while writing with the same priority and count.
+    def _push_at(self, tr, item, count, priority, random_ID):
+        key = self._item[priority][count][random_ID]
+        # Protect against the unlikely event that another transaction pushing a 
+        # an item with the same priority got the same count and random ID.
         tr.add_read_conflict_key(key)
         tr[key] = item
         tr[self._member[self._decode(item)][priority][count]] = ''
@@ -150,7 +154,7 @@ class PriorityQueue(object):
         count = self._get_next_count(tr.snapshot, self._pop_request)
         if count == 0 and not forced:
             return None
-        request_key = self._pop_request.pack((count, self._random_ID()))
+        request_key = self._pop_request.pack((count, _random_ID()))
         # Protect against the unlikely event that someone else got the same
         # random ID while adding a pop request.
         tr.add_read_conflict_key(request_key)
@@ -198,7 +202,7 @@ class PriorityQueue(object):
     # checks to see if its request has been fulfilled.
     def _pop_high(self, db, max):
 
-        backoff = 0.01
+        #backoff = 0.01
 
         tr = db.create_transaction()
 
@@ -216,20 +220,28 @@ class PriorityQueue(object):
                 tr.commit().wait()
 
         except fdb.FDBError as e:
-            # If we didn't succeed, then register our pop request.
+            # If we didn't succeed, then register our pop request with a 
+            # separate transaction.
             request_key = self._add_pop_request(db, True)
 
-        # When the pop request is eventually fufilled, its result will be stored
-        # at a unique key formed from its random ID.
+        # Our pop request is now registered.
+
+        # When the request is eventually fufilled, its result will be stored at
+        # a unique key formed from its random ID.
         random_ID = self._pop_request.unpack(request_key)[1]
         result_key = self._requested_item[random_ID]
 
+        # Here we logically start a new transaction, reusing the old 
+        # transaction object only for efficiency.
         tr.reset()
+
+        backoff = 0.01
 
         # Attempt to fulfill outstanding requests, then poll the database to
         # check if our request has been fulfilled.
-        while 1:
+        while True:
             try:
+                # Fulfill requests in a separate transaction.
                 self._fulfill_requested_pops(db, max)
             except fdb.FDBError as e:
                 # If the error is 1020 (not_committed), then another client has
@@ -244,7 +256,7 @@ class PriorityQueue(object):
                 tr.reset()
 
                 if tr[request_key].present():
-                    # Our request has not yet been fulfilled; try again.
+                    # Our request is still pending; try again until it isn't.
                     time.sleep(backoff)
                     backoff = min(1, backoff * 2)
                     continue
@@ -260,6 +272,10 @@ class PriorityQueue(object):
             except fdb.FDBError as e:
                 tr.on_error(e.code).wait()
 
+def _random_ID():
+    # Relies on good random data from the OS to avoid collisions
+    return os.urandom(20)
+
 ##################
 # Internal tests #
 ##################
@@ -270,26 +286,26 @@ def smoke_test(db, max):
     pq = PriorityQueue(fdb.directory.create_or_open(db, ('P',)), False)
     print 'Clear Priority Queue'
     pq.clear(db)
-    print 'Empty? %s' % pq.empty(db)
+    print 'Empty? %s' % pq.isempty(db)
     print 'Push 10, 8, 6'
-    pq.push(db, 10, 10)
-    pq.push(db, 8, 8)
-    pq.push(db, 8, 7)
-    pq.push(db, 6, 6)
+    pq.push(db, 10, 10, _random_ID())
+    pq.push(db, 8, 8, _random_ID())
+    pq.push(db, 8, 7, _random_ID())
+    pq.push(db, 6, 6, _random_ID())
     #pq.remove(db, 8)
-    print 'Empty? %s' % pq.empty(db)
+    print 'Empty? %s' % pq.isempty(db)
     # print 'Contains {}? {}'.format(8, 8 in pq)
     print 'Pop item: %s' % pq.pop(db, max)
     print 'Next item: %s' % pq.peek(db, max)
     print 'Pop item: %s' % pq.pop(db, max)
     print 'Pop item: %s' % pq.pop(db, max)
     print 'Pop item: %s' % pq.pop(db, max)
-    print 'Empty? %s' % pq.empty(db)
+    print 'Empty? %s' % pq.isempty(db)
     print 'Push 5'
-    pq.push(db, 5, 5)
+    pq.push(db, 5, 5, _random_ID())
     print 'Clear Priority Queue'
     pq.clear(db)
-    print 'Empty? %s' % pq.empty(db)
+    print 'Empty? %s' % pq.isempty(db)
 
 
 def single_client(db, ops):
@@ -297,14 +313,14 @@ def single_client(db, ops):
     pq = PriorityQueue(fdb.directory.create_or_open(db, ('P',)), False)
     pq.clear(db)
     for i in range(ops):
-        pq.push(db, i, i)
+        pq.push(db, i, i, _random_ID())
     for i in range(ops):
         print pq.pop(db, max=False)
 
 
 def producer(pq, db, id, total):
     for i in range(total):
-        pq.push(db, '%d.%d' % (id, i), id)
+        pq.push(db, '%d.%d' % (id, i), id, _random_ID())
 
 
 def consumer(pq, db, id, total):
