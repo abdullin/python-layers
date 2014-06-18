@@ -202,8 +202,6 @@ class PriorityQueue(object):
     # checks to see if its request has been fulfilled.
     def _pop_high(self, db, max):
 
-        #backoff = 0.01
-
         tr = db.create_transaction()
 
         try:
